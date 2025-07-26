@@ -58,8 +58,9 @@ df["DXY_z"]      = (df["DXY"] - df["DXY"].rolling(60).mean()) / df["DXY"].rollin
 # ----------------------------#
 # 3. 目標變數 (Label)
 # ----------------------------#
-df["future_ret_5d"] = df["Close"].shift(-5).pct_change(5, fill_method=None)
-df["y"] = (df["future_ret_5d"] > 0).astype(int)
+N = 20                            # modify as needed
+df[f"future_ret_{N}d"] = df["Close"].shift(-N).pct_change(N, fill_method=None)
+df["y"] = (df[f"future_ret_{N}d"] > 0).astype(int)
 
 # ----------------------------#
 # 4. 資料清洗
@@ -93,7 +94,7 @@ clf.fit(X_train, y_train)
 # ----------------------------#
 # 7. 評估模型
 # ----------------------------#
-threshold = 0.42        # modify threshold: 0.25~0.45
+threshold = 0.037        # modify threshold
 y_prob = clf.predict_proba(X_test)[:, 1]
 y_pred = (y_prob > threshold).astype(int)
 
