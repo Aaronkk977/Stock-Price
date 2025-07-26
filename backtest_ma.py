@@ -2,11 +2,11 @@ import yfinance as yf, pandas as pd
 from backtesting import Backtest, Strategy
 import matplotlib.pyplot as plt
 
-TICKERS = ["2330.TW", "2454.TW", "2317.TW", "2881.TW", "2308.TW", "2382.TW", "2412.TW", "2882.TW", "2891.TW", "3711.TW"]  # 台灣十大權值股
-START   = "2015-01-01"
-CASH    = 1_000_000          # 每檔初始資金
+TICKERS = ["BTC-USD", "ETH-USD", "ADA-USD"]
+START   = "2020-01-01"
+CASH    = 100_000_000          # 每檔初始資金
 
-fast, slow = 20, 60          # 均線參數
+fast, slow = 7, 30          # 均線參數
 stats_list, curves = [], []  # 存績效與淨值曲線
 
 # ────────────────── 1. 迴圈逐檔回測 ──────────────────
@@ -21,11 +21,15 @@ for tk in TICKERS:
         def init(self): pass
         def next(self):
             if self.data.ma_fast[-2] < self.data.ma_slow[-2] and self.data.ma_fast[-1] > self.data.ma_slow[-1]:
+                if self.position.is_short:
+                    self.position.close()
                 self.buy()
             elif self.position and self.data.ma_fast[-2] > self.data.ma_slow[-2] and self.data.ma_fast[-1] < self.data.ma_slow[-1]:
-                self.position.close()
+                if self.position.is_long:
+                    self.position.close()
+                self.sell()
 
-    bt     = Backtest(df, SmaCross, cash=CASH, commission=0.001425)
+    bt     = Backtest(df, SmaCross, cash=CASH, commission=0.0001) # TW STOCK COMMISSION: 0.001425
     result = bt.run()
     stats_list.append(result)               # 收集指標
     curves.append(result['_equity_curve'])  # 收集淨值

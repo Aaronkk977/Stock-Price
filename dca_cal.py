@@ -66,47 +66,47 @@ def prompt_freq():
         print("只接受 daily、weekly 或 monthly")
 
 def main():
-    # p = argparse.ArgumentParser(description="DCA Calculator")
-    # p.add_argument("ticker", help="股票代號，如 2330.TW / AAPL")
-    # p.add_argument("--start", required=True, help="YYYY-MM-DD")
-    # p.add_argument("--end",   required=True, help="YYYY-MM-DD")
-    # p.add_argument("--amount", type=float, default=10000, help="每期投入金額")
-    # p.add_argument("--freq",   choices=["daily","weekly","monthly"], default="monthly")
-    # args = p.parse_args()
+    p = argparse.ArgumentParser(description="DCA Calculator")
+    p.add_argument("ticker", help="股票代號，如 2330.TW / AAPL")
+    p.add_argument("--start", required=True, help="YYYY-MM-DD")
+    p.add_argument("--end",   required=True, help="YYYY-MM-DD")
+    p.add_argument("--amount", type=float, default=10000, help="每期投入金額")
+    p.add_argument("--freq",   choices=["daily","weekly","monthly"], default="monthly")
+    args = p.parse_args()
 
-    # res = simulate_dca(args.ticker, args.start, args.end, args.amount, args.freq)
+    res = simulate_dca(args.ticker, args.start, args.end, args.amount, args.freq)
 
-    # print(f"\n=== DCA Backtest ({args.ticker}) ===")
-    # print(f"期間           : {args.start} → {args.end}")
-    # print(f"投入頻率       : {args.freq}  每期投入 {args.amount:,.0f}")
-    # print(f"投入期數       : {int(res['invested']/args.amount)}")
-    # print(f"總投入         : {res['invested']:,.0f}")
-    # print(f"持股數         : {res['shares']:.4f}")
-    # print(f"期末市值       : {res['final_val']:,.0f}")
-    # print(f"總報酬率       : {res['total_ret']*100:,.2f}%")
-    # print(f"CAGR           : {res['cagr']*100:,.2f}%")
-    # print(f"Sharpe Ratio   : {res['sharpe']:.2f}\n")
+    print(f"\n=== DCA Backtest ({args.ticker}) ===")
+    print(f"期間           : {args.start} → {args.end}")
+    print(f"投入頻率       : {args.freq}  每期投入 {args.amount:,.0f}")
+    print(f"投入期數       : {int(res['invested']/args.amount)}")
+    print(f"總投入         : {res['invested']:,.0f}")
+    print(f"持股數         : {res['shares']:.4f}")
+    print(f"期末市值       : {res['final_val']:,.0f}")
+    print(f"總報酬率       : {res['total_ret']*100:,.2f}%")
+    print(f"CAGR           : {res['cagr']*100:,.2f}%")
+    print(f"Sharpe Ratio   : {res['sharpe']:.2f}\n")
 
-    ticker = input("請輸入股票代號 (如 2330.TW / AAPL): ").strip()
-    start  = prompt_date("回測起始日")
-    end    = prompt_date("回測結束日")
-    amt_in = input("每期投入金額 (預設 10000): ").strip()
-    amount = float(amt_in) if amt_in else 10000.0
-    freq   = prompt_freq()
+    # ticker = input("請輸入股票代號 (如 2330.TW / AAPL): ").strip()
+    # start  = prompt_date("回測起始日")
+    # end    = prompt_date("回測結束日")
+    # amt_in = input("每期投入金額 (預設 10000): ").strip()
+    # amount = float(amt_in) if amt_in else 10000.0
+    # freq   = prompt_freq()
 
-    res = simulate_dca(ticker, start, end, amount, freq)
+    # res = simulate_dca(ticker, start, end, amount, freq)
 
-    print(f"""
-        === DCA 回測結果 ({ticker}) ===
-        期間         : {start} → {end}
-        每期投入     : {amount:,.0f}  頻率: {freq}
-        期數         : {int(res['invested']/amount)}  總投入: {res['invested']:,.0f}
-        持股數       : {res['shares']:.4f}     
-        期末市值     : {res['final_val']:,.0f}
-        總報酬率     : {res['total_ret']*100:.2f}%
-        CAGR         : {res['cagr']*100:.2f}%
-        Sharpe Ratio : {res['sharpe']:.2f}
-    """)
+    # print(f"""
+    #     === DCA Backtest ({ticker}) ===
+    #     期間         : {start} → {end}
+    #     每期投入     : {amount:,.0f}  頻率: {freq}
+    #     期數         : {int(res['invested']/amount)}  總投入: {res['invested']:,.0f}
+    #     持股數       : {res['shares']:.4f}     
+    #     期末市值     : {res['final_val']:,.0f}
+    #     總報酬率     : {res['total_ret']*100:.2f}%
+    #     CAGR         : {res['cagr']*100:.2f}%
+    #     Sharpe Ratio : {res['sharpe']:.2f}
+    # """)
 
 if __name__ == "__main__":
     sys.exit(main())
