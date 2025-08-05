@@ -65,12 +65,12 @@ for i in range(lookback, len(df)):
     df.at[df.index[i], "ARIMA_resid"] = df["Close"].iloc[i] - pred
 
 # ---------------- 3. 分位標籤 (Top/Bottom 30%) ---------------- #
-N = 30
+N = 20
 ret_col = f"future_ret_{N}d"
 df[ret_col] = df["Close"].shift(-N).pct_change(N, fill_method=None)
-q25, q75 = df[ret_col].quantile([0.25, 0.75])
-df["y"] = np.where(df[ret_col] >= q75, 1,
-           np.where(df[ret_col] <= q25, 0, np.nan))
+q30, q70 = df[ret_col].quantile([0.30, 0.70])
+df["y"] = np.where(df[ret_col] >= q70, 1,
+           np.where(df[ret_col] <= q30, 0, np.nan))
 
 feature_cols = ["MA7","MA30","MA60","MA180","MA_dev",
                 "Ret_1d","Ret_7d","Ret_30d","Ret_60d",
@@ -84,7 +84,7 @@ X, y = df[feature_cols], df["y"].astype(int)
 
 # ---------------- 4. 時序切分 ---------------- #
 X_train, X_valid, y_train, y_valid = train_test_split(
-    X, y, test_size=0.2, shuffle=False)
+    X, y, test_size=0.3, shuffle=False)
 
 # ---------------- 5. LightGBM ---------------- #
 params = dict(
@@ -94,11 +94,11 @@ params = dict(
     num_leaves         = 16,
     max_depth          = 3,
     feature_fraction   = 0.5,
-    bagging_fraction   = 0.7,
+    bagging_fraction   = 0.6,
     bagging_freq       = 5,
     min_data_in_leaf   = 40,
     min_gain_to_split  = 0.1,
-    verbose            = -1           # 不加 is_unbalance，因類別已近 1:1
+    verbose            = -1       
 )
 
 train_set = lgb.Dataset(X_train, y_train)
@@ -121,11 +121,6 @@ print("Train AUC :", model.best_score["train"]["auc"])
 print("Valid AUC :", model.best_score["valid"]["auc"])
 
 # ---------------- 6. 測試集評估 ---------------- #
-# y_prob = model.predict(X_valid)
-# threshold = 0.42
-# y_pred = (y_prob > threshold).astype(int)       
-# print(classification_report(y_valid, y_pred, digits=4))
-
 imp = pd.Series(model.feature_importance(), index=feature_cols).sort_values(ascending=False)
 print("\nTop 10 feature importance:")
 print(imp.head(10))
@@ -141,17 +136,39 @@ print(classification_report(y_valid, y_pred_adj))
 
 # ---------------- 7. 回測：連續倉位 ---------------- #
 prob_all = model.predict(X)
-weight   = ((prob_all - 0.35).clip(0, 0.25)/0.25) * 1   
-position = pd.Series(weight, index=df.index).shift(1).rolling(N).max()
+weight   = ((prob_all - best_th).clip(0, 0.025)/0.025) * 1 
+position_raw = (
+    pd.Series(weight, index=df.index)
+    .shift(1)  # 隔日開盤成交
+    .fillna(0.0)
+)
+ret_daily = df["Close"].pct_change().fillna(0)
+ret_raw   = position_raw * ret_daily
+curve_raw = (1 + ret_raw).cumprod()
 
-daily_ret = df["Close"].pct_change()
-strategy_ret = position * daily_ret
+# ── 7‑a. 計算回檔停損後的部位 ────────────────────────────────────
+DD_STOP = 0.20  # 回檔停損 20%
 
-ann_ret = (1+strategy_ret).prod()**(252/len(strategy_ret))-1
-sharpe  = strategy_ret.mean()/strategy_ret.std()*np.sqrt(252)
-max_dd  = (equity:=(1+strategy_ret).cumprod()).div(equity.cummax()).min()
-print(f"\n=== Strategy Performance === \nAnn [%]:{ann_ret:.2%}  Sharpe:{sharpe:.2f}  MaxDD:{max_dd:.2%}")
+# === 1. 計算停損遮罩 ===
+roll_max   = curve_raw.cummax()
+stop_mask  = curve_raw < roll_max * (1 - DD_STOP)      # True → 觸發停損
+stop_shift = stop_mask.shift(1).fillna(False).astype(bool)
 
+# === 2. 生成停損後的持倉 ===
+position_dd          = position_raw.copy()
+position_dd[stop_shift] = 0            # 前一日已觸發 → 今日空倉
+
+# === 3. 每日報酬與權益曲線 ===
+ret_dd  = position_dd * ret_daily      # 這才是「日報酬」
+equity  = (1 + ret_dd).cumprod()       # 權益曲線 (起始=1)
+
+# === 4. 績效指標 ===
+ann_ret = equity.iloc[-1]**(252/len(equity)) - 1              # 年化報酬
+sharpe  = ret_dd.mean() / ret_dd.std() * np.sqrt(252)         # Sharpe 用日報酬
+max_dd  = (equity / equity.cummax()).min()                    # Max Drawdown
+
+print(f"\n=== Strategy Performance ==="
+      f"\nAnn [%]: {ann_ret:.2%}  Sharpe: {sharpe:.2f}  MaxDD: {max_dd:.2%}")
 # compare with buy & hold
 daily_ret = df["Close"].pct_change()
 
@@ -168,7 +185,7 @@ print(f"Ann [%]:{ann_ret:.2%}  Sharpe:{sharpe:.2f}  MaxDD:{max_dd:.2%}")
 import matplotlib.pyplot as plt
 plt.hist(y_valid_proba, bins=60, edgecolor="k")
 plt.title("Predicted probability (valid set)")
-plt.xlabel("prob(class=1)"); plt.ylabel("count")
+plt.xlabel(f"prob(class=1), best threshold={best_th}"); plt.ylabel("count")
 plt.savefig("prob_hist.png")
 
 
