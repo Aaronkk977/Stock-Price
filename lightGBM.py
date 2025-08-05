@@ -65,20 +65,12 @@ for i in range(lookback, len(df)):
     df.at[df.index[i], "ARIMA_resid"] = df["Close"].iloc[i] - pred
 
 # ---------------- 3. 分位標籤 (Top/Bottom 30%) ---------------- #
-pred_horizon = 5                                   # 預測 5 日後
-df["fwd_ret"] = df["Close"].shift(-pred_horizon) / df["Close"] - 1
-
-upper_th = 0.05                                    # > +5 % → 做多
-lower_th = -0.05                                   # < –5 % → 放空
-
-# 0 = 空、1 = HOLD、2 = 多
-conditions = [df["fwd_ret"] < lower_th,
-              (df["fwd_ret"] >= lower_th) & (df["fwd_ret"] <= upper_th),
-              df["fwd_ret"] > upper_th]
-choices    = [0, 1, 2]
-
-df["y"] = np.select(conditions, choices)
-df = df.dropna()                                   # 清掉尾端 NaN
+N = 30
+ret_col = f"future_ret_{N}d"
+df[ret_col] = df["Close"].shift(-N).pct_change(N, fill_method=None)
+q25, q75 = df[ret_col].quantile([0.25, 0.75])
+df["y"] = np.where(df[ret_col] >= q75, 1,
+           np.where(df[ret_col] <= q25, 0, np.nan))
 
 feature_cols = ["MA7","MA30","MA60","MA180","MA_dev",
                 "Ret_1d","Ret_7d","Ret_30d","Ret_60d",
@@ -96,13 +88,12 @@ X_train, X_valid, y_train, y_valid = train_test_split(
 
 # ---------------- 5. LightGBM ---------------- #
 params = dict(
-    objective          = "multiclass",
-    num_class          = 3,              # 0 = 空、1 = HOLD、2 = 多
-    metric             = ["multi_logloss", "multi_error"],
+    objective          = "binary",
+    metric             = "auc",
     learning_rate      = 0.01,
-    num_leaves         = 64,
+    num_leaves         = 16,
     max_depth          = 3,
-    feature_fraction   = 0.7,
+    feature_fraction   = 0.5,
     bagging_fraction   = 0.7,
     bagging_freq       = 5,
     min_data_in_leaf   = 40,
@@ -110,13 +101,19 @@ params = dict(
     verbose            = -1           # 不加 is_unbalance，因類別已近 1:1
 )
 
-model = lgb.LGBMClassifier(**params)
+train_set = lgb.Dataset(X_train, y_train)
+valid_set = lgb.Dataset(X_valid, y_valid)
 
-model.fit(
-    X_train, y_train,
-    eval_set=[(X_valid, y_valid)],
-    eval_metric="multi_logloss",
-    callbacks=[lgb.early_stopping(150), lgb.log_evaluation(50)]
+model = lgb.train(
+    params,
+    train_set,
+    num_boost_round=4000,
+    valid_names=["train", "valid"],
+    valid_sets=[train_set, valid_set],
+    callbacks=[
+        early_stopping(stopping_rounds=150),   # 
+        log_evaluation(period=100)             # == verbose_eval=100
+    ],
 )
 
 print("Best iter :", model.best_iteration)
@@ -124,24 +121,38 @@ print("Train AUC :", model.best_score["train"]["auc"])
 print("Valid AUC :", model.best_score["valid"]["auc"])
 
 # ---------------- 6. 測試集評估 ---------------- #
-# 機率矩陣 shape = (N, 3)
-proba = model.predict_proba(X_valid)              
+# y_prob = model.predict(X_valid)
+# threshold = 0.42
+# y_pred = (y_prob > threshold).astype(int)       
+# print(classification_report(y_valid, y_pred, digits=4))
 
-# 直接取 argmax ⇒ 最可能的類別
-y_pred = proba.argmax(axis=1)
+imp = pd.Series(model.feature_importance(), index=feature_cols).sort_values(ascending=False)
+print("\nTop 10 feature importance:")
+print(imp.head(10))
 
-print(classification_report(y_valid, y_pred, digits=4))
-print(confusion_matrix(y_valid, y_pred))
+y_valid_proba = model.predict(X_valid, num_iteration=model.best_iteration)
+fpr, tpr, thresh = roc_curve(y_valid, y_valid_proba)
+# 以 Youden J 或最小化 (FP_cost, FN_cost) 選最優 threshold
+best_idx = np.argmax(tpr - fpr)
+best_th  = thresh[best_idx]
+
+y_pred_adj = (y_valid_proba >= best_th).astype(int)
+print(classification_report(y_valid, y_pred_adj))
 
 # ---------------- 7. 回測：連續倉位 ---------------- #
-position = pd.Series(index=df.index, dtype=float)
-position.loc[val_index] = np.select(
-    [y_pred == 0, y_pred == 1, y_pred == 2],
-    [-1, 0, 1]
-).astype(float)
-position = position.shift(1).fillna(0)           # 隔日開盤才執行
+prob_all = model.predict(X)
+weight   = ((prob_all - 0.35).clip(0, 0.25)/0.25) * 1   
+position = pd.Series(weight, index=df.index).shift(1).rolling(N).max()
 
-# compare with buy & hold performance
+daily_ret = df["Close"].pct_change()
+strategy_ret = position * daily_ret
+
+ann_ret = (1+strategy_ret).prod()**(252/len(strategy_ret))-1
+sharpe  = strategy_ret.mean()/strategy_ret.std()*np.sqrt(252)
+max_dd  = (equity:=(1+strategy_ret).cumprod()).div(equity.cummax()).min()
+print(f"\n=== Strategy Performance === \nAnn [%]:{ann_ret:.2%}  Sharpe:{sharpe:.2f}  MaxDD:{max_dd:.2%}")
+
+# compare with buy & hold
 daily_ret = df["Close"].pct_change()
 
 equity = (1 + daily_ret).cumprod()
