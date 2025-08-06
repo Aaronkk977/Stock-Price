@@ -2,11 +2,12 @@ import os
 
 os.environ.update({
     "TF_CPP_MIN_LOG_LEVEL": "2",
-    "TF_NUM_INTRAOP_THREADS": "2",
-    "TF_NUM_INTEROP_THREADS": "2",
+    "TF_NUM_INTRAOP_THREADS": "4",
+    "TF_NUM_INTEROP_THREADS": "4",
     "OMP_NUM_THREADS": "2",
     "TF_XLA_FLAGS": "--tf_xla_enable_xla_devices=false",
     "TF_ENABLE_ONEDNN_OPTS": "0",
+    "TF_DATA_THREADPOOL_SIZE_OVERRIDE": "2"
 })
 
 import pandas as pd
@@ -33,11 +34,11 @@ DATA_INTERVAL = "1h"
 SEQUENCE_LENGTH = 3 # Input: Use previous 3 hours [cite: 110, 132]
 FORECAST_HORIZON = 1 # Output: Predict next 1 hour [cite: 110]
 FEATURES = ['Open', 'High', 'Low', 'Close', 'Volume'] # Adjusted for yfinance auto_adjust=True [cite: 114]
-TARGETS = ['High', 'Low']
+TARGETS = ['High', 'Low'] # Paper predicts High and Low prices
 TRAIN_SPLIT_RATIO = 0.8 # [cite: 117]
 
 # N-BEATS Hyperparameters [cite: 143, 154]
-N_BLOCKS = 3
+N_BLOCKS = 6
 N_NEURONS = 128 # Units per block
 N_STACKS = 1 # Paper doesn't explicitly mention stacks, assuming 1 stack of N_BLOCKS
 N_LAYERS_PER_BLOCK = 4 # Common N-BEATS setting, not specified in paper
@@ -219,7 +220,7 @@ def create_nbeats_model(seq_len, horizon, num_features, num_targets, n_blocks, n
         backcast_layer = layers.Dense(seq_len * num_features, name=f'backcast_{i}')
         backcast = backcast_layer(theta_b)
 
-        forecast_layer = layers.Dense(horizon * num_targets, name=f'forecast_{i}')
+        forecast_layer = layers.Dense(horizon * num_targets, name=f'forecast_{i}', activation='sigmoid')
         forecast = forecast_layer(theta_f) # Shape (batch_size, horizon * num_targets)
 
         # Double Residual Connection: Subtract backcast from input to block
@@ -279,16 +280,18 @@ reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss',
                                                  min_lr=LEARNING_RATE / 100)
 
 # Train the model
+def build_dataset(X, y, batch):
+    ds = tf.data.Dataset.from_tensor_slices((X, y)).batch(batch)
+    opts = tf.data.Options()
+    opts.threading.private_threadpool_size = 2
+    opts.threading.max_intra_op_parallelism = 1
+    return ds.with_options(opts).prefetch(1)
+
 history = model.fit(
-    X_train, y_train,
+    build_dataset(X_train, y_train, batch=256),
     epochs=EPOCHS,
-    batch_size=BATCH_SIZE,
-    validation_split=0.1, # Use last 10% of training data for validation during training
-    callbacks=[early_stopping, reduce_lr],
-    verbose=1,
-    # gpt fix
-    # workers=1,
-    # use_multiprocessing=False
+    validation_data=build_dataset(X_test, y_test, batch=256),
+    verbose=1
 )
 
 # Plot training history
@@ -299,7 +302,7 @@ plt.title('Model Loss History')
 plt.xlabel('Epoch')
 plt.ylabel('MAE Loss')
 plt.legend()
-plt.show()
+plt.savefig('model_loss_history.png')
 
 print("\n--- Step 5: Evaluation ---")
 
@@ -319,6 +322,11 @@ r2 = r2_score(y_test_original, predictions_original)
 print(f"\nTest Set Evaluation (Original Scale):")
 print(f"Mean Absolute Error (MAE): {mae:.6f}")
 print(f"R-squared (R2 Score):      {r2:.6f}")
+
+# gpt debug
+mae_scaled = mean_absolute_error(y_test, predictions_scaled.clip(0,1))
+r2_scaled  = r2_score(y_test, predictions_scaled.clip(0,1))
+print(f"Scaled MAE: {mae_scaled:.6f},  Scaled R2: {r2_scaled:.4f}")
 
 # Comparison with paper's results (Note potential ambiguity/typo in paper's reported values)
 # Abstract: MAE 0.9998, R2 0.00240 [cite: 7]
@@ -353,7 +361,7 @@ plt.ylabel('Price (USD)')
 plt.legend()
 plt.grid(True, linestyle='--', alpha=0.6)
 plt.tight_layout()
-plt.show()
+plt.savefig('high_price_predictions.png')
 
 plt.figure(figsize=(15, 7))
 plt.plot(y_test_original[:plot_points, low_col_index], label='Actual Low', color='blue', linewidth=1)
@@ -364,6 +372,6 @@ plt.ylabel('Price (USD)')
 plt.legend()
 plt.grid(True, linestyle='--', alpha=0.6)
 plt.tight_layout()
-plt.show()
+plt.savefig('low_price_predictions.png')
 
 print("\n--- Script Finished ---")
