@@ -26,11 +26,11 @@ class CryptoBacktester:
         self.benchmark_ret  = self.data[self.assets[0]].pct_change().fillna(0)  # 以第一個資產為基準
         self.benchmark_curve = (1 + self.benchmark_ret).cumprod()
 
-
-    def run_strategy(self, signal_fn):
-        w = signal_fn(self.returns)
-        self.portfolio['strategy_return'] = (w.shift(1)*self.returns).sum(axis=1)
-        self.portfolio['cumulative_return'] = (1+self.portfolio['strategy_return']).cumprod()
+    def run_strategy(self, signal_fn, use_prices=False):
+        src = self.data if use_prices else self.returns   # ★這行決定餵啥
+        w   = signal_fn(src)                              # ★真正呼叫函式
+        self.portfolio['strategy_return'] = (w.shift(1) * self.returns).sum(axis=1)
+        self.portfolio['cumulative_return'] = (1 + self.portfolio['strategy_return']).cumprod()
 
     def evaluate(self):
         strat = self.portfolio['strategy_return']
@@ -54,7 +54,7 @@ class CryptoBacktester:
             ax=ax, label='Buy & Hold', linestyle='--')
         ax.set_title('Cumulative Return')
         ax.legend()
-        save_path = "./backtest_plot.png"
+        save_path = "./30d-momentum.png"
         ax.get_figure().savefig(save_path,
                                 dpi=300,               # 解析度
                                 bbox_inches='tight')   # 去空白邊
@@ -67,7 +67,19 @@ def momentum_signal(returns, window=30):
     weights  = (latest == latest.max()).astype(int)   # 只買最強者
     return pd.DataFrame([weights]*len(returns), index=returns.index, columns=returns.columns)
 
-bt = CryptoBacktester(['BTC-USD','ETH-USD','BNB-USD', 'XRP-USD', 'SOL-USD', 'ADA-USD', "LTC-USD", 'DOGE-USD'])
+def cointegration_spread_signal(data):
+    btc, eth = data['BTC-USD'], data['ETH-USD']
+    hedge    = np.polyfit(eth, btc, 1)[0]          # 簡易對沖比
+    spread   = btc - hedge*eth
+    z        = (spread-spread.rolling(30).mean())/spread.rolling(30).std()
+
+    w = pd.DataFrame(0.0, index=data.index, columns=data.columns)
+    w.loc[z<-1.5, ['BTC-USD','ETH-USD']] = [1, -hedge]
+    w.loc[z> 1.5, ['BTC-USD','ETH-USD']] = [-1, hedge]
+    return w.fillna(method='ffill')
+
+basket = ['BTC-USD','ETH-USD','BNB-USD', 'XRP-USD', 'SOL-USD', 'ADA-USD', "LTC-USD", 'DOGE-USD']
+bt = CryptoBacktester(basket)
 bt.run_strategy(momentum_signal)
 bt.evaluate();  
 bt.plot()
