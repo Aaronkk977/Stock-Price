@@ -1,3 +1,14 @@
+import os
+
+os.environ.update({
+    "TF_CPP_MIN_LOG_LEVEL": "2",
+    "TF_NUM_INTRAOP_THREADS": "2",
+    "TF_NUM_INTEROP_THREADS": "2",
+    "OMP_NUM_THREADS": "2",
+    "TF_XLA_FLAGS": "--tf_xla_enable_xla_devices=false",
+    "TF_ENABLE_ONEDNN_OPTS": "0",
+})
+
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -8,6 +19,8 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+tf.config.threading.set_intra_op_parallelism_threads(1)
+tf.config.threading.set_inter_op_parallelism_threads(1)
 
 print("TensorFlow Version:", tf.__version__)
 
@@ -272,7 +285,10 @@ history = model.fit(
     batch_size=BATCH_SIZE,
     validation_split=0.1, # Use last 10% of training data for validation during training
     callbacks=[early_stopping, reduce_lr],
-    verbose=1
+    verbose=1,
+    # gpt fix
+    # workers=1,
+    # use_multiprocessing=False
 )
 
 # Plot training history
