@@ -2,7 +2,6 @@ import yfinance as yf, pandas as pd, numpy as np, lightgbm as lgb, ta
 from sklearn.metrics import classification_report, roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
 from lightgbm import early_stopping, log_evaluation 
-from statsmodels.tsa.statespace.sarimax import SARIMAX # ARIMA 
 
 # ---------------- 1. 下載資料 ---------------- #
 ticker, start_date = "BTC-USD", "2015-01-01"
@@ -45,25 +44,6 @@ last_halving = halving_dates[last_halving]
 cycle_day = (df.index - last_halving).days
 df["halving_phase"]   = cycle_day / 1458
 
-df["ARIMA_pred"]  = np.nan
-df["ARIMA_resid"] = np.nan
-
-# walk forcasting：用前 365 天資料去預測未來 1 天收盤價
-lookback = 365
-order    = (5, 1, 0)        # 你可用 AIC / BIC 先試好 p,d,q
-
-for i in range(lookback, len(df)):
-    train_series = df["Close"].iloc[i - lookback: i]          # 過去 lookback 天做為訓練
-    train_series = train_series.asfreq('B')
-    model_arima  = SARIMAX(train_series, order=order,
-                            freq='B',
-                           enforce_stationarity=False,
-                           enforce_invertibility=False)
-    res   = model_arima.fit(disp=False)
-    pred  = res.forecast(1).iloc[0]                           # 下一天的預測收盤價
-    df.at[df.index[i], "ARIMA_pred"]  = pred
-    df.at[df.index[i], "ARIMA_resid"] = df["Close"].iloc[i] - pred
-
 # ---------------- 3. 分位標籤 (Top/Bottom 30%) ---------------- #
 N = 20
 ret_col = f"future_ret_{N}d"
@@ -76,8 +56,7 @@ feature_cols = ["MA7","MA30","MA60","MA180","MA_dev",
                 "Ret_1d","Ret_7d","Ret_30d","Ret_60d",
                 "RSI14","Stoch_%K","Stoch_%D","Vol_z",
                 "DXY_ret_20d","DXY_ret_60d","DXY_z",
-                "SP500_ret_10d","SP500_z","halving_phase",
-                "ARIMA_pred","ARIMA_resid"]
+                "SP500_ret_10d","SP500_z","halving_phase"]
 
 df = df.dropna(subset=feature_cols + ["y"])
 X, y = df[feature_cols], df["y"].astype(int)

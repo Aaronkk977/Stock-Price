@@ -38,8 +38,8 @@ TARGETS = ['High', 'Low'] # Paper predicts High and Low prices
 TRAIN_SPLIT_RATIO = 0.8 # [cite: 117]
 
 # N-BEATS Hyperparameters [cite: 143, 154]
-N_BLOCKS = 6
-N_NEURONS = 128 # Units per block
+N_BLOCKS = 8
+N_NEURONS = 256 # Units per block
 N_STACKS = 1 # Paper doesn't explicitly mention stacks, assuming 1 stack of N_BLOCKS
 N_LAYERS_PER_BLOCK = 4 # Common N-BEATS setting, not specified in paper
 THETA_SIZE = N_NEURONS # Size of the expansion coefficients, can be tuned
@@ -308,6 +308,7 @@ print("\n--- Step 5: Evaluation ---")
 
 # Make predictions on the test set
 predictions_scaled = model.predict(X_test)
+predictions_scaled = predictions_scaled.clip(0, 1)  # Clip predictions to [0, 1] range
 
 # Inverse transform predictions and actual values
 # Predictions shape: (num_samples, num_targets)
