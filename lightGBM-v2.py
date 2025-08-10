@@ -2,6 +2,74 @@ import yfinance as yf, pandas as pd, numpy as np, lightgbm as lgb, ta
 from sklearn.metrics import classification_report, roc_curve, roc_auc_score
 from lightgbm import early_stopping, log_evaluation 
 from statsmodels.tsa.statespace.sarimax import SARIMAX # ARIMA 
+import os, requests
+
+# on-chain data
+GN = "https://api.glassnode.com/v1/metrics"
+API = "c3f9572c4a2f4f17aa643a72f5cedc41"   # export GLASSNODE_API_KEY=XXXX
+
+ASSET_MAP = {"BTC-USD":"BTC"}  # 可自行擴充
+
+def gnode(metric_path, asset="BTC", since="2019-01-01", until=None, interval="1d"):
+    params = {"a": asset, "api_key": API, "i": interval, "s": pd.Timestamp(since).timestamp()}
+    if until: params["u"] = pd.Timestamp(until).timestamp()
+    url = f"{GN}/{metric_path}"
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+    df = pd.DataFrame(r.json())
+    # 轉成日頻索引、欄名統一
+    df["t"] = pd.to_datetime(df["t"], unit="s", utc=True).dt.tz_convert(None).normalize()
+    df = df.rename(columns={"t":"date", "v": metric_path.replace("/","_")}).set_index("date")
+    return df
+
+def fetch_onchain_for_asset(ticker, start, end):
+    a = ASSET_MAP[ticker]
+    # 最常用兩個：活躍地址、轉帳量（USD）
+    act = gnode("addresses/active_count", a, start, end)
+    vol = gnode("transactions/transfers_volume_sum", a, start, end)  # 單位: native；可再接 _usd
+    # 若要 USD：用 /transactions/transfers_volume_sum?c=USD（某些指標支援 c 參數）
+    out = act.join(vol, how="outer").sort_index()
+    out["asset"] = ticker
+    return out
+
+def fetch_onchain(basket, start, end):
+    dfs = [fetch_onchain_for_asset(t, start, end) for t in basket if t in ASSET_MAP]
+    onchain = pd.concat(dfs).set_index("asset", append=True)  # index=(date, asset)
+    return onchain
+
+def zscore(s, win):
+    m, sd = s.rolling(win).mean(), s.rolling(win).std()
+    return (s - m) / (sd.replace(0, np.nan))
+
+def build_onchain_features(onchain, windows=(7, 30)):
+    """
+    onchain: index=(date, asset), columns=[addresses_active_count, transactions_transfers_volume_sum, ...]
+    回傳: 與 onchain 同 index/日頻的特徵表（已 shift(1) 防洩漏）
+    """
+    oc = onchain.copy()
+    # 1) 基礎變換
+    for col in oc.columns:
+        oc[f"log1p_{col}"] = np.log1p(oc[col])
+
+    # 2) 平滑 + 變化率 + Z 分數
+    for base in [c for c in oc.columns if c.startswith("log1p_")]:
+        # EMA 平滑
+        oc[f"{base}_ema7"]  = oc[base].ewm(span=7, adjust=False).mean()
+        oc[f"{base}_ema14"] = oc[base].ewm(span=14, adjust=False).mean()
+        # 30D 比例變化（動能味道）
+        oc[f"{base}_roc30"] = oc[base].diff(30)
+        # 標準化：以 90D 窗口做 z
+        oc[f"{base}_z90"]   = zscore(oc[base], 90)
+
+    # 3) 只保留工程後欄位
+    feats = oc[[c for c in oc.columns if c.startswith("log1p_") or c.endswith(("_ema7","_ema14","_roc30","_z90"))]]
+
+    # 4) 發布延遲防護：全部 shift(1)
+    feats = feats.groupby(level=1).shift(1)  # by asset
+
+    # 5) 缺值處理（前向填充 + 限制）
+    feats = feats.groupby(level=1).ffill().fillna(0.0)
+    return feats
 
 # === Purged CV & Walk-Forward Helpers ===
 def _get_dates_index(X):
@@ -99,7 +167,34 @@ last_halving = halving_dates[last_halving]
 cycle_day = (df.index - last_halving).days
 df["halving_phase"]   = cycle_day / 1458
 
+df["ARIMA_pred"]  = np.nan
+df["ARIMA_resid"] = np.nan
+
+lookback = 365
+order    = (5, 1, 0)
+for i in range(lookback, len(df)):
+    train_series = df["Close"].iloc[i - lookback: i]
+    train_series = train_series.asfreq('B')
+    model_arima  = SARIMAX(train_series, order=order, freq='B', enforce_stationarity=False, enforce_invertibility=False)
+    res   = model_arima.fit(disp=False)
+    pred  = res.forecast(1).iloc[0]
+    df.at[df.index[i], "ARIMA_pred"]  = pred
+    df.at[df.index[i], "ARIMA_resid"] = df["Close"].iloc[i] - pred
+
 # ---------------- 3. 標籤 (Top/Bottom 30%) ---------------- #
+# --- On-chain integration (BTC only) ---
+try:
+    on_raw = fetch_onchain(['BTC-USD'], start=start_date, end=None)
+    oc_feats_multi = build_onchain_features(on_raw)
+    oc_btc = oc_feats_multi.xs('BTC-USD', level=1)
+    oc_btc.columns = [f"oc_{c}" for c in oc_btc.columns]
+    df = df.join(oc_btc, how='left')
+    added_onchain_cols = oc_btc.columns.tolist()
+    print(f"Added on-chain BTC features: {len(added_onchain_cols)} cols")
+except Exception as e:
+    print("On-chain fetch failed, skipping:", e)
+    added_onchain_cols = []
+
 N = 20
 ret_col = f"future_ret_{N}d"
 df[ret_col] = df["Close"].shift(-N).pct_change(N, fill_method=None)
@@ -110,13 +205,14 @@ feature_cols = ["MA7","MA30","MA60","MA180","MA_dev",
                 "Ret_1d","Ret_7d","Ret_30d","Ret_60d",
                 "RSI14","Stoch_%K","Stoch_%D","Vol_z",
                 "DXY_ret_20d","DXY_ret_60d","DXY_z",
-                "SP500_ret_10d","SP500_z","halving_phase"]
+                "SP500_ret_10d","SP500_z","halving_phase",
+                "ARIMA_pred","ARIMA_resid"] + added_onchain_cols
 
 df = df.dropna(subset=feature_cols + ["y"]).copy()
 X, y = df[feature_cols], df["y"].astype(int)
 
 # ---------------- 4. Purged Time-Series CV 取得最佳迭代數 ---------------- #
-purge_days = N  # 針對標籤前視窗 (20 天) 做 purge，特徵皆使用歷史不需更長
+purge_days = max(N, 90 if added_onchain_cols else N)
 folds = build_purged_folds(X, n_splits=5, purge_days=purge_days, embargo_days=5)
 
 params = dict(
